@@ -1,0 +1,11 @@
+.env
+.DS_Store
+__pycache__/
+*.pyc
+venv/
+.venv/
+audio/*.m4a
+audio/*.mp3
+audio/*.wav
+transcripts/*.json
+followups/*.txt
