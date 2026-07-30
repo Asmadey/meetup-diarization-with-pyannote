@@ -1,65 +1,54 @@
 ---
 name: meeting-transcriber
-description: Transcribe meeting audio recordings using Groq Whisper API and pyannote.audio diarization to produce structured plain-text meeting follow-ups (no markdown formatting).
+description: Transcribe meeting audio recordings using Groq Whisper API, pyannote.audio diarization, and LLM speaker resolution to produce structured plain-text meeting follow-ups and maintain an execution registry.
 ---
 
-# Meeting Transcriber Skill (Groq Whisper + pyannote.audio Diarization)
+# Meeting Transcriber Skill (Groq Whisper + pyannote.audio + LLM Speaker Resolver)
 
-Данный навык позволяет автоматически расшифровывать записи рабочих встреч (`.m4a`, `.mp3`, `.wav`), проводить диаризацию (определение того, кто какую фразу сказал) и генерировать итоговый структурированный текстовый фоллоу-ап строго в формате `example.md` (без символов Markdown-разметки типа `#`, `**`, `*`).
+Данный навык автоматически находит новые аудиозаписи встреч в папке `Meets/audio/`, выполняет расшифровку, определяет реальные имена участников (например, "Оскар Хартманн", "Альмир"), сопоставляет реплики, ведает реестр в `реестр.md` и сохраняет итоговые протоколы в `Meets/followups/` строго по образцу `example.md` (без символов разметки Markdown).
 
 ---
 
-## 🚀 Быстрый запуск
+## 🚀 Автоматический запуск
 
-### 1. Настройка окружения и переменных
+### 1. Единый запуск обработки последнего аудиофайла
 
-Убедитесь, что в окружении или файле `.env` задан ключ API Groq:
-```env
-GROQ_API_KEY=gsk_...
-```
-Если используется диаризация через `pyannote.audio`, также требуется токен HuggingFace (после принятия пользовательского соглашения на странице `pyannote/speaker-diarization-3.1`):
-```env
-HF_TOKEN=hf_...
-```
+Запустите автоматическую обработку самого свежего непереработанного аудиофайла из `Meets/audio/`:
 
-### 2. Команда расшифровки и сборки фоллоу-апа
-
-Запустите обработку файла аудиозаписи:
 ```bash
-python3 skills/meeting-transcriber/scripts/transcribe_diarize.py --audio /path/to/audio.m4a --output /path/to/meeting_raw.json
+python3 skills/meeting-transcriber/scripts/process_latest.py
 ```
 
-А затем сгенерируйте итоговый `.txt` документ отчета:
+Или укажите конкретный файл вручную:
+
 ```bash
-python3 skills/meeting-transcriber/scripts/format_followup.py --input /path/to/meeting_raw.json --title "Синк по направлению ..." --output /path/to/followup.txt
+python3 skills/meeting-transcriber/scripts/process_latest.py --audio Meets/audio/meeting.m4a --title "Синк по продукту — 30.07.2026"
 ```
 
 ---
 
-## 📋 Формат выходящего документа
+## 📁 Карта каталогов и файлов
 
-Выходящий документ **ОБЯЗАН** быть в строго чистом текстовом формате (plain text `.txt` или `.md` без элементов разметки Markdown):
+- **Входящие аудиофайлы**: [Meets/audio/](file:///Users/asmadey/AntiGravity/JGGL/Meets/audio)
+- **Сырые транскрипты с именами спикеров**: [Meets/transcripts/](file:///Users/asmadey/AntiGravity/JGGL/Meets/transcripts)
+- **Итоговые чистые текстовые фоллоу-апы**: [Meets/followups/](file:///Users/asmadey/AntiGravity/JGGL/Meets/followups) (по шаблону [example.md](file:///Users/asmadey/AntiGravity/JGGL/Meets/followups/example.md))
+- **Реестр обработанных файлов**: [skills/meeting-transcriber/реестр.md](file:///Users/asmadey/AntiGravity/JGGL/skills/meeting-transcriber/реестр.md)
 
-```
-Синк по направлению Recsys — 29.07.2026
+---
 
-Участники:
+## 👥 Определение спикеров (LLM Speaker Resolution)
 
-1. Бахридин (JGGL)
-2. Иван (JGGL)
-...
+1. Скрипт `transcribe_diarize.py` разбивает аудио на фрагменты и транскрибирует через Groq Whisper.
+2. Скрипт `resolve_speakers.py` с помощью Groq LLM (`llama-3.3-70b-versatile`):
+   - Определяет реальные имена участников встречи (например, *Альмир*, *Оскар Хартманн*).
+   - Заменяет все `SPEAKER_UNKNOWN` на реальные имена спикеров в поле `"speaker"` внутри JSON-файла транскрипта.
+   - При отсутствии точных имен использует последовательную нумерацию `SPEAKER_1`, `SPEAKER_2` и т.д.
 
-Обсудили:
+---
 
-1. Тема первой договоренности — детали темы.
-2. Тема второй договоренности — детали темы.
-   2.1) подпункт
-   2.2) подпункт
-...
-```
+## 📊 Реестр обработанных файлов (`реестр.md`)
 
-### Правила форматирования:
-- Никаких `#`, `##`, `###` заголовков Markdown.
-- Никакой жирности `**текст**` или курсива `*текст*`.
-- Точное следование пустой строке между разделами.
-- Структурированные пронумерованные списки с подпунктами (1., 2., 2.1), 2.2)).
+Реестр хранится в [skills/meeting-transcriber/реестр.md](file:///Users/asmadey/AntiGravity/JGGL/skills/meeting-transcriber/реестр.md) и автоматически пополняется после каждого успешного прогона:
+
+| Дата и время обработки | Имя файла аудио | Длительность / Размер | Файл транскрипта (JSON) | Фоллоу-ап (TXT) | Статус |
+|---|---|---|---|---|---|
