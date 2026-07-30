@@ -1,11 +1,21 @@
 ---
 name: meeting-transcriber
-description: Transcribe meeting audio recordings using Groq Whisper API, pyannote.audio diarization, and LLM speaker resolution to produce structured plain-text meeting follow-ups and maintain an execution registry.
+description: Transcribe meeting audio recordings using Groq Whisper API (whisper-large-v3 with automatic fallback to whisper-large-v3-turbo upon rate limits), pyannote.audio diarization, and LLM speaker resolution to produce structured plain-text meeting follow-ups and maintain an execution registry.
 ---
 
-# Meeting Transcriber Skill (Groq Whisper + pyannote.audio + LLM Speaker Resolver)
+# Meeting Transcriber Skill (Groq Whisper + Automatic Model Fallback + pyannote.audio + LLM Speaker Resolver)
 
-Данный навык автоматически находит новые аудиозаписи встреч в папке `Meets/audio/`, выполняет расшифровку, определяет реальные имена участников (например, "Оскар Хартманн", "Альмир"), сопоставляет реплики, ведает реестр в `реестр.md` и сохраняет итоговые протоколы в `Meets/followups/` строго по образцу `example.md` (без символов разметки Markdown).
+Данный навык автоматически находит новые аудиозаписи встреч в папке `Meets/audio/`, выполняет расшифровку, определяет реальные имена участников (например, "Оскар Хартманн", "Альмир"), сопоставляет реплики, ведет реестр в `реестр.md` и сохраняет итоговые протоколы в `Meets/followups/` строго по образцу `example.md` (без символов разметки Markdown).
+
+---
+
+## ⚡ Автоматический Фолбэк Моделей (Model Fallback Strategy)
+
+По умолчанию транскрибация выполняется основной моделью **`whisper-large-v3`**.
+Если от Groq API придет ошибка исчерпания часового лимита / кредитов / rate limit (код `429` или сообщение `rate_limit_exceeded`), скрипт:
+1. Выведет предупреждение `⚠️ Model 'whisper-large-v3' hit rate limit/credits exhausted.`
+2. Автоматически переключит обработку текущего и последующих фрагментов аудио на запасную модель **`whisper-large-v3-turbo`**.
+3. Зафиксирует использованную модель (`whisper-large-v3-turbo (fallback)`) в итоговом JSON-файле транскрипта.
 
 ---
 
@@ -38,7 +48,7 @@ python3 skills/meeting-transcriber/scripts/process_latest.py --audio Meets/audio
 
 ## 👥 Определение спикеров (LLM Speaker Resolution)
 
-1. Скрипт `transcribe_diarize.py` разбивает аудио на фрагменты и транскрибирует через Groq Whisper.
+1. Скрипт `transcribe_diarize.py` разбивает аудио на фрагменты и транскрибирует через Groq Whisper (с фолбэком на Turbo).
 2. Скрипт `resolve_speakers.py` с помощью Groq LLM (`llama-3.3-70b-versatile`):
    - Определяет реальные имена участников встречи (например, *Альмир*, *Оскар Хартманн*).
    - Заменяет все `SPEAKER_UNKNOWN` на реальные имена спикеров в поле `"speaker"` внутри JSON-файла транскрипта.

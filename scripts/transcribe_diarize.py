@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 transcribe_diarize.py — Audio Transcription & Diarization Script
-Uses Groq Whisper API (whisper-large-v3 / whisper-large-v3-turbo) for speech recognition
+Uses Groq Whisper API (whisper-large-v3 with automatic fallback to whisper-large-v3-turbo) for speech recognition
 and pyannote.audio for speaker diarization.
 Supports automatic audio chunking via ffmpeg for files > 24 MB.
 """
@@ -73,19 +73,40 @@ def split_audio_ffmpeg(audio_path: str, chunk_duration_sec: int = 600):
     print(f"Split audio into {len(chunks_with_offsets)} chunks.")
     return chunks_with_offsets, temp_dir
 
-def transcribe_single_chunk(client, chunk_path: str, model: str, language: str, time_offset: float = 0.0):
+def transcribe_single_chunk(client, chunk_path: str, model_state: dict, language: str, time_offset: float = 0.0):
     with open(chunk_path, "rb") as file:
+        file_bytes = file.read()
+
+    while True:
+        current_model = model_state["current_model"]
         kwargs = {
-            "file": (os.path.basename(chunk_path), file.read()),
-            "model": model,
+            "file": (os.path.basename(chunk_path), file_bytes),
+            "model": current_model,
             "temperature": 0,
             "response_format": "verbose_json",
         }
         if language:
             kwargs["language"] = language
 
-        transcription = client.audio.transcriptions.create(**kwargs)
-    
+        try:
+            transcription = client.audio.transcriptions.create(**kwargs)
+            break
+        except Exception as e:
+            err_str = str(e).lower()
+            is_rate_or_quota = any(k in err_str for k in [
+                "rate", "limit", "quota", "credit", "429", "exceeded", "resets", "capacity", "resource"
+            ])
+            
+            if is_rate_or_quota and model_state["fallback_models"]:
+                fallback = model_state["fallback_models"].pop(0)
+                print(f"⚠️ Warning: Model '{current_model}' hit rate limit/credits exhausted ({e}).", file=sys.stderr)
+                print(f"🔄 Automatically falling back to model '{fallback}'...", file=sys.stderr)
+                model_state["current_model"] = fallback
+                model_state["used_fallback"] = True
+            else:
+                print(f"Error during transcription with model '{current_model}': {e}", file=sys.stderr)
+                raise e
+
     result_dict = transcription.model_dump() if hasattr(transcription, "model_dump") else dict(transcription)
     
     segments = result_dict.get("segments", [])
@@ -95,13 +116,21 @@ def transcribe_single_chunk(client, chunk_path: str, model: str, language: str, 
         
     return segments, result_dict.get("text", "")
 
-def transcribe_audio_groq(client, audio_path: str, model: str = "whisper-large-v3-turbo", language: str = "ru"):
+def transcribe_audio_groq(client, audio_path: str, model: str = "whisper-large-v3", language: str = "ru"):
     file_size = os.path.getsize(audio_path)
     
+    fallback_chain = ["whisper-large-v3-turbo"] if model == "whisper-large-v3" else []
+    model_state = {
+        "current_model": model,
+        "fallback_models": fallback_chain,
+        "used_fallback": False
+    }
+
     if file_size <= MAX_FILE_SIZE_BYTES:
         print(f"Transcribing audio ({file_size/(1024*1024):.1f} MB) with Groq model '{model}'...")
-        segments, full_text = transcribe_single_chunk(client, audio_path, model, language, 0.0)
-        return {"segments": segments, "text": full_text}
+        segments, full_text = transcribe_single_chunk(client, audio_path, model_state, language, 0.0)
+        final_model_name = f"{model_state['current_model']} (fallback)" if model_state["used_fallback"] else model_state["current_model"]
+        return {"segments": segments, "text": full_text, "model_used": final_model_name}
     else:
         print(f"Audio file is larger than 24MB limit ({file_size/(1024*1024):.1f} MB). Processing in chunks...")
         chunks, temp_dir = split_audio_ffmpeg(audio_path, chunk_duration_sec=600)
@@ -110,14 +139,15 @@ def transcribe_audio_groq(client, audio_path: str, model: str = "whisper-large-v
         
         try:
             for i, (chunk_path, offset_sec) in enumerate(chunks, 1):
-                print(f"Transcribing chunk {i}/{len(chunks)} (offset: {offset_sec:.1f}s, size: {os.path.getsize(chunk_path)/(1024*1024):.1f} MB)...")
-                seg, text = transcribe_single_chunk(client, chunk_path, model, language, offset_sec)
+                print(f"Transcribing chunk {i}/{len(chunks)} (offset: {offset_sec:.1f}s, size: {os.path.getsize(chunk_path)/(1024*1024):.1f} MB, model: {model_state['current_model']})...")
+                seg, text = transcribe_single_chunk(client, chunk_path, model_state, language, offset_sec)
                 all_segments.extend(seg)
                 full_text_parts.append(text)
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
             
-        return {"segments": all_segments, "text": " ".join(full_text_parts)}
+        final_model_name = f"{model_state['current_model']} (fallback)" if model_state["used_fallback"] else model_state["current_model"]
+        return {"segments": all_segments, "text": " ".join(full_text_parts), "model_used": final_model_name}
 
 def diarize_audio_pyannote(audio_path: str, hf_token: str = None):
     token = hf_token or os.getenv("HF_TOKEN") or os.getenv("HuggingFace")
@@ -209,7 +239,7 @@ def main():
     parser = argparse.ArgumentParser(description="Transcribe and diarize meeting audio")
     parser.add_argument("--audio", required=True, help="Path to input audio file (.m4a, .mp3, .wav)")
     parser.add_argument("--output", help="Path to save output raw transcript JSON")
-    parser.add_argument("--model", default="whisper-large-v3-turbo", choices=["whisper-large-v3", "whisper-large-v3-turbo"], help="Groq Whisper model")
+    parser.add_argument("--model", default="whisper-large-v3", choices=["whisper-large-v3", "whisper-large-v3-turbo"], help="Groq Whisper model (default: whisper-large-v3 with fallback to whisper-large-v3-turbo)")
     parser.add_argument("--language", default="ru", help="Audio language ISO code (default: ru)")
     parser.add_argument("--groq-key", help="Groq API key")
     parser.add_argument("--hf-token", help="HuggingFace token for pyannote.audio")
@@ -226,13 +256,14 @@ def main():
 
     segments = groq_resp.get("segments", [])
     full_text = groq_resp.get("text", "")
+    model_used = groq_resp.get("model_used", args.model)
 
     speaker_turns = diarize_audio_pyannote(audio_path, args.hf_token)
     timeline = merge_transcription_and_diarization(segments, speaker_turns)
 
     result_data = {
         "audio_file": audio_path,
-        "model": args.model,
+        "model": model_used,
         "full_text": full_text,
         "timeline": timeline
     }
@@ -244,7 +275,7 @@ def main():
     with open(output_path, "w", encoding="utf-8") as f:
         json.dump(result_data, f, ensure_ascii=False, indent=2)
 
-    print(f"Done! Raw transcription and diarization saved to: {output_path}")
+    print(f"Done! Raw transcription (Model: {model_used}) and diarization saved to: {output_path}")
 
 if __name__ == "__main__":
     main()
