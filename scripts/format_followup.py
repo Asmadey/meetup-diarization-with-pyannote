@@ -3,6 +3,7 @@
 format_followup.py — Formatter for meeting transcripts into strict plain-text follow-ups.
 Uses Groq LLM (e.g. llama-3.3-70b-versatile) to produce high-quality executive summaries
 strictly matching the structure of example.md (no Markdown syntax).
+Automatically handles large transcripts to stay within Groq TPM/token limits.
 """
 
 import os
@@ -36,7 +37,7 @@ EXACT TEMPLATE TO FOLLOW:
 
 Обсудили:
 
-1. [Тема 1] — [Подробная суть решения, кто за что отвечает, блокеры и договоренности].
+1. [Тема 1] — [Подробная суть решения, ключевые инсайты, блокеры и договоренности].
 2. [Тема 2] — [Подробности].
    2.1) [подпункт]
    2.2) [подпункт]
@@ -56,16 +57,37 @@ def get_groq_client(api_key: str = None):
         return None
     return Groq(api_key=key)
 
+def sample_transcript_content(timeline, full_text, max_chars=25000):
+    """
+    Trims/samples long transcripts to stay safely under Groq LLM token limits (~8,000 tokens).
+    """
+    if len(full_text) <= max_chars:
+        timeline_str = "\n".join([
+            f"[{turn.get('speaker', 'SPEAKER')}] ({turn.get('start')}s): {turn.get('text')}"
+            for turn in timeline
+        ])
+        return timeline_str, full_text
+        
+    print(f"Transcript is large ({len(full_text)} chars). Sampling timeline to fit LLM context limit...")
+    step = len(timeline) // 100 if len(timeline) > 100 else 1
+    sampled_turns = timeline[::step]
+    
+    timeline_str = "\n".join([
+        f"[{turn.get('speaker', 'SPEAKER')}] ({turn.get('start')}s): {turn.get('text')}"
+        for turn in sampled_turns
+    ])
+    
+    # Trim full_text if needed
+    trimmed_full_text = full_text[:max_chars] + f"\n... [Transcript continues for {len(full_text)} total chars]"
+    return timeline_str, trimmed_full_text
+
 def generate_followup_llm(client, transcript_data, title="Синк по встрече", model="llama-3.3-70b-versatile"):
     timeline = transcript_data.get("timeline", [])
     full_text = transcript_data.get("full_text", "")
     
-    timeline_str = "\n".join([
-        f"[{turn.get('speaker', 'SPEAKER')}] ({turn.get('start')}s - {turn.get('end')}s): {turn.get('text')}"
-        for turn in timeline
-    ])
+    timeline_str, trimmed_text = sample_transcript_content(timeline, full_text, max_chars=24000)
     
-    user_content = f"Meeting Title: {title}\n\nTranscript Timeline:\n{timeline_str}\n\nFull Text:\n{full_text}"
+    user_content = f"Meeting Title: {title}\n\nTranscript Timeline (Sampled):\n{timeline_str}\n\nFull Text Summary Content:\n{trimmed_text}"
     
     print(f"Generating summary using Groq LLM model '{model}'...")
     response = client.chat.completions.create(
