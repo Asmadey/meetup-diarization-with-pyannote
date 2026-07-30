@@ -113,9 +113,9 @@ python3 scripts/format_followup.py --input transcripts/meet.json --title "Син
 
 Участники:
 
-1. Бахридин (JGGL)
-2. Иван (JGGL)
-3. Николай (JGGL)
+1. Имя 1
+2. Имя 2
+3. Имя 3
 
 Обсудили:
 
