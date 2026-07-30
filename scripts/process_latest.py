@@ -6,7 +6,7 @@ process_latest.py — Complete Pipeline Orchestrator for Meeting Transcriber Ski
 3. Transcribes & diarizes audio -> saves JSON to Meets/transcripts/.
 4. Resolves speaker names via LLM (replacing SPEAKER_UNKNOWN).
 5. Generates plain text follow-up -> saves TXT to Meets/followups/.
-6. Updates skills/meeting-transcriber/реестр.md.
+6. Updates skills/meeting-transcriber/реестр.md with clickable links to audio, transcript, and follow-up.
 """
 
 import os
@@ -14,6 +14,7 @@ import sys
 import json
 import argparse
 import subprocess
+import urllib.parse
 from datetime import datetime
 from pathlib import Path
 from dotenv import load_dotenv
@@ -40,7 +41,7 @@ def init_registry_file():
 
 Файл автоматически обновляется навыком `meeting-transcriber`.
 
-| Дата и время обработки | Имя файла аудио | Длительность / Размер | Файл транскрипта (JSON) | Фоллоу-ап (TXT) | Статус |
+| Дата и время обработки | Исходный аудиофайл | Размер | Файл транскрипта (JSON) | Фоллоу-ап (TXT) | Статус |
 |---|---|---|---|---|---|
 """
         with open(REGISTRY_PATH, "w", encoding="utf-8") as f:
@@ -57,7 +58,13 @@ def get_processed_filenames():
         if line.startswith("|") and not line.startswith("| Дата") and not line.startswith("|---"):
             parts = [p.strip() for p in line.split("|")[1:-1]]
             if len(parts) >= 2:
-                processed.add(parts[1])
+                # Extract filename from markdown link [filename.mp3](...) or raw text
+                audio_col = parts[1]
+                if audio_col.startswith("[") and "]" in audio_col:
+                    raw_name = audio_col[1:audio_col.index("]")]
+                else:
+                    raw_name = audio_col
+                processed.add(raw_name)
     return processed
 
 def get_latest_unprocessed_audio(specified_audio=None):
@@ -82,21 +89,24 @@ def get_latest_unprocessed_audio(specified_audio=None):
         print("No new unprocessed audio files found in Meets/audio/", file=sys.stderr)
         return None
 
-    # Pick the file with latest modification time
     files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
     return files[0]
+
+def make_file_url(file_path: Path) -> str:
+    path_str = str(file_path.resolve())
+    return f"file://{urllib.parse.quote(path_str)}"
 
 def record_in_registry(audio_path, transcript_path, followup_path, status="Успешно ✅"):
     init_registry_file()
     
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    file_name = audio_path.name
     size_mb = f"{audio_path.stat().st_size / (1024*1024):.1f} MB"
     
-    transcript_rel = f"[{transcript_path.name}](file://{transcript_path})"
-    followup_rel = f"[{followup_path.name}](file://{followup_path})"
+    audio_link = f"[{audio_path.name}]({make_file_url(audio_path)})"
+    transcript_link = f"[{transcript_path.name}]({make_file_url(transcript_path)})"
+    followup_link = f"[{followup_path.name}]({make_file_url(followup_path)})"
     
-    row = f"| {now_str} | {file_name} | {size_mb} | {transcript_rel} | {followup_rel} | {status} |\n"
+    row = f"| {now_str} | {audio_link} | {size_mb} | {transcript_link} | {followup_link} | {status} |\n"
     
     with open(REGISTRY_PATH, "a", encoding="utf-8") as f:
         f.write(row)
